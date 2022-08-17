@@ -1,7 +1,10 @@
 package gin_session
 
 import (
+	db_store "github.com/dev-shao/gin-session/gorm-store"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/driver/sqlite"
 	"math/rand"
 	"strings"
 	"time"
@@ -11,7 +14,6 @@ import (
 var SessionKey = "Session"
 var SessionCookieName = "SessionId"
 var SessionExpireAge time.Duration = 604800 //seconds, default 7 days
-
 
 func Middleware(store Store) gin.HandlerFunc {
 	return func(context *gin.Context) {
@@ -29,6 +31,16 @@ func Middleware(store Store) gin.HandlerFunc {
 	}
 }
 
+/*
+default sqlite database store
+*/
+func Default() gin.HandlerFunc {
+	db, err := gorm.Open(sqlite.Open("./sessions.db"))
+	if err != nil {
+		panic(err)
+	}
+	return Middleware(db_store.New(db))
+}
 
 type Store interface {
 	Get(key string) (map[string]interface{}, error)
@@ -37,6 +49,7 @@ type Store interface {
 	Exists(key string) bool
 	GetExpireTime(key string) time.Time
 	SetExpireTime(key string, duration time.Duration)
+	ClearExpired()
 }
 
 
@@ -144,5 +157,3 @@ func (self *Session) newKey() string {
 	}
 	return ""
 }
-
-

@@ -86,6 +86,11 @@ func (self *GormStore) SetExpireTime(key string, duration time.Duration) {
 	self.db.Model(self.model).Where("`key` = ?", key).Update("expire_time", self.convertTime(duration))
 }
 
+func (self *GormStore) ClearExpired() {
+	now := time.Now()
+	self.db.Where("expire_time < ?", now).Delete(self.model)
+}
+
 func (self *GormStore) migrate() error {
 	return self.db.AutoMigrate(self.model)
 }

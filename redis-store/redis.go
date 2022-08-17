@@ -64,6 +64,8 @@ func (self *RedisStore) SetExpireTime(key string, duration time.Duration) {
 	self.client.Expire(key, duration)
 }
 
+func (self *RedisStore) ClearExpired() {}
+
 func (self *RedisStore) encode(data map[string]interface{}) (string, error) {
 	writer := bytes.Buffer{}
 	encoder := gob.NewEncoder(&writer)
