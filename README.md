@@ -31,8 +31,7 @@ func main(){
         session.Delete("key")
         //save
         session.Save()
-	})
-	
+    })
 }
 ```
 
@@ -77,7 +76,7 @@ func main(){
 ```
 more database see: [gorm document](https://gorm.io/docs/connecting_to_the_database.html)
 
-### ReidsStore
+### RedisStore
 ```go
 import (
     "github.com/dev-shao/gin-session"
