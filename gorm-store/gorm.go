@@ -1,4 +1,4 @@
-package db_store
+package gorm_store
 
 import (
 	"bytes"
