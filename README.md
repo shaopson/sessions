@@ -4,7 +4,7 @@ A simple gin session middleware, currently supports redis, gorm store backend.
 ## Install
 
 ```
-go get github.com/dev-shao/gin-session
+go get -u github.com/dev-shao/gin-session
 ```
 ## Quick start
 ```go
