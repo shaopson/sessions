@@ -1,159 +1,147 @@
-package gin_session
+package sessions
 
 import (
-	db_store "github.com/dev-shao/gin-session/gorm-store"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
-	"gorm.io/driver/sqlite"
-	"math/rand"
-	"strings"
-	"time"
+	"sync"
 )
 
+type Session struct {
+	key    string
+	data   map[string]interface{}
+	expire int32
+	store  Store
+	mutex  sync.RWMutex
+}
 
-var SessionKey = "Session"
+var SessionName = "sessions.Session"
 var SessionCookieName = "SessionId"
-var SessionExpireAge time.Duration = 604800 //seconds, default 7 days
+var SessionExpire int32 = 604800 //second; 604800 = 7 days
+var CookieSecure = false
+var CookieHttpOnly = false
+var CookiePath = "/"
+var CookieDomain = ""
 
 func Middleware(store Store) gin.HandlerFunc {
 	return func(context *gin.Context) {
-		key, _ := context.Cookie(SessionCookieName)
-		session := New(key, SessionExpireAge, store)
-		if err := session.Load(); err != nil {
-			panic(err)
+		sessionId, _ := context.Cookie(SessionCookieName)
+		session, err := Load(sessionId, store)
+		if err != nil {
+			context.Error(err)
+			return
 		}
-		context.Set(SessionKey, session)
+		context.Set(SessionName, session)
+		context.SetCookie(SessionCookieName, session.Key(), int(session.expire), CookiePath, CookieDomain, CookieSecure, CookieHttpOnly)
 		context.Next()
-		if err := session.Save(); err != nil {
-			panic(err)
+		if err = session.Save(); err != nil {
+			context.Error(err)
 		}
-		context.SetCookie(SessionCookieName, session.key, int(SessionExpireAge), "/", "", true, false)
 	}
 }
 
-/*
-default sqlite database store
-*/
-func Default() gin.HandlerFunc {
-	db, err := gorm.Open(sqlite.Open("./sessions.db"))
-	if err != nil {
-		panic(err)
+func Get(context *gin.Context) (*Session, error) {
+	if value, exists := context.Get(SessionName); exists {
+		if session, ok := value.(*Session); ok {
+			return session, nil
+		} else {
+			return nil, fmt.Errorf("Get Session fail, Please do not modify the value of gin.Context key('%s')\r\n", SessionName)
+		}
 	}
-	return Middleware(db_store.New(db))
+	return nil, fmt.Errorf("Session not found. Did you forget to register the session middleware or modify the value of gin.Context key('%s')\r\n", SessionName)
 }
 
-type Store interface {
-	Get(key string) (map[string]interface{}, error)
-	Set(key string, value map[string]interface{}, expire time.Duration) error
-	Delete(key string)
-	Exists(key string) bool
-	GetExpireTime(key string) time.Time
-	SetExpireTime(key string, duration time.Duration)
-	ClearExpired()
-}
-
-
-type Session struct {
-	key string
-	data map[string]interface{}
-	expireAge time.Duration
-	store Store
-}
-
-func From(ctx *gin.Context) *Session {
-	value, exists := ctx.Get(SessionKey)
-	if !exists {
-		return nil
+// get a session from the store by key.
+// If the key is invalid or the session does not exist, return the session of the new key
+func Load(key string, store Store) (session *Session, err error) {
+	session = &Session{
+		data:   map[string]interface{}{},
+		expire: SessionExpire,
+		store:  store,
 	}
-	return value.(*Session)
-}
-
-
-func New(key string, expire time.Duration, store Store) *Session {
-	return &Session{
-		key: key,
-		data: make(map[string]interface{}),
-		expireAge: expire * time.Second,
-		store: store,
+	if len(key) != 32 {
+		return
 	}
-}
-
-func (self *Session) Load() error {
-	if self.key == "" {
-		return nil
-	}
-	data, err := self.store.Get(self.key)
-	if data == nil || err != nil {
-		return err
-	}
-	for k, v := range data {
-		self.data[k] = v
-	}
-	return nil
-}
-
-func (self *Session) Get(key string) interface{} {
-	return self.data[key]
-}
-
-func (self *Session) DefaultGet(key string, defaultValue interface{}) interface{} {
-	if value, exists := self.data[key]; !exists {
-		return defaultValue
+	var data StoreValue
+	if data, err = store.Get(key); err != nil {
+		if err == DoesNotExists || err == InvalidData {
+			err = nil
+		}
+		return
 	} else {
-		return value
+		session.data = data
+	}
+	return
+}
+
+func New(store Store) *Session {
+	return &Session{
+		key:    newKey(store),
+		data:   map[string]interface{}{},
+		expire: SessionExpire,
+		store:  store,
 	}
 }
 
-func (self *Session) Set(key string, value interface{}) {
-	self.data[key] = value
-}
-
-func (self *Session) Delete(key string) {
-	delete(self.data, key)
-}
-
-func (self *Session) Clear() {
-	for k, _ := range self.data {
-		delete(self.data, k)
+func (session *Session) Key() string {
+	if session.key == "" {
+		session.key = newKey(session.store)
 	}
+	return session.key
 }
 
-func (self *Session) Save() error {
-	if self.key == "" {
-		self.key = self.newKey()
+func (session *Session) Get(key string) interface{} {
+	session.mutex.RLock()
+	defer session.mutex.RUnlock()
+	return session.data[key]
+}
+
+func (session *Session) Set(key string, value interface{}) {
+	session.mutex.Lock()
+	defer session.mutex.Unlock()
+	session.data[key] = value
+}
+
+func (session *Session) Delete(key string) {
+	delete(session.data, key)
+}
+
+func (session *Session) Clear() {
+	session.data = make(map[string]interface{})
+}
+
+func (session *Session) Save() error {
+	session.mutex.RLock()
+	defer session.mutex.RUnlock()
+	return session.store.Set(session.Key(), session.data, session.expire)
+}
+
+// clear data and refresh key
+func (session *Session) Refresh(context *gin.Context) {
+	session.Clear()
+	if session.key != "" {
+		session.store.Delete(session.key)
 	}
-	return self.store.Set(self.key, self.data, self.expireAge)
+	session.key = newKey(session.store)
+	context.SetCookie(SessionCookieName, session.Key(), int(session.expire), CookiePath, CookieDomain, CookieSecure, CookieHttpOnly)
 }
 
-// refresh key
-func (self *Session) Refresh() {
-	self.key = self.newKey()
+func (session *Session) ExpireAge() int32 {
+	return session.expire
 }
 
-func (self *Session) GetExpireTime() time.Time {
-	return self.store.GetExpireTime(self.key)
+func (session *Session) SetExpireAge(expire int32) {
+	session.expire = expire
 }
 
-func (self *Session) SetExpireAge(expire time.Duration) {
-	self.expireAge = expire
-}
-
-var chars = "1234567890abcdefghijklnmopqrstuvwxyzABCDEFGHIJKLNMOPQRSTUVWSYZ#$*"
-
-func (self *Session) newKey() string {
-	rand.Seed(time.Now().UnixNano())
-	length := len(chars)
-	buf := strings.Builder{}
-	for true {
-		for i := 0; i < 32; i++ {
-			x := rand.Intn(length)
-			c := chars[x:x+1]
-			buf.WriteString(c)
+func newKey(store Store) (key string) {
+	b := make([]byte, 32)
+	for {
+		rand.Read(b)
+		key = base64.RawURLEncoding.EncodeToString(b)[:32]
+		if !store.Exists(key) {
+			return
 		}
-		key := buf.String()
-		if !self.store.Exists(key) {
-			return key
-		}
 	}
-	return ""
 }
