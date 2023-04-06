@@ -57,12 +57,13 @@ import (
 )
 
 func main() {
-    opt := redis.Options{
+    opt := &redis.Options{
         Network: "tcp",
         Addr: "127.0.0.1:6379",
         DB: 0,
     }
-    store := sessions.NewRedisStore(&opt)
+    client := redis.NewClient(opt)
+    store := sessions.NewRedisStore(client)
     middleware := sessions.Middleware(store)
 }
 ```
